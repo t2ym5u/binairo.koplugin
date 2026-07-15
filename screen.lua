@@ -7,12 +7,15 @@ local function lrequire(name)
     return package.loaded[key]
 end
 
+local ButtonDialog    = require("ui/widget/buttondialog")
 local ButtonTable     = require("ui/widget/buttontable")
 local Device          = require("device")
 local FrameContainer  = require("ui/widget/container/framecontainer")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan  = require("ui/widget/horizontalspan")
 local Size            = require("ui/size")
+local TitleBar        = require("ui/widget/titlebar")
+local UIManager       = require("ui/uimanager")
 local VerticalGroup   = require("ui/widget/verticalgroup")
 local VerticalSpan    = require("ui/widget/verticalspan")
 local T               = require("ffi/util").template
@@ -20,7 +23,6 @@ local _               = require("i18n")
 
 local ScreenBase      = require("screen_base")
 local MenuHelper      = require("menu_helper")
-local SettingsDialog  = require("settings_dialog")
 
 local BinairoBoard       = lrequire("board")
 local BinairoBoardWidget = lrequire("board_widget")
@@ -33,6 +35,22 @@ local SIZES = {
     { id = "10", text = "10×10" },
     { id = "12", text = "12×12" },
 }
+
+local GAME_RULES_EN = [[
+Fill every row and column with equal 0s and 1s.
+• No three consecutive identical values in any row or column.
+• Tap a cell to cycle: empty → 0 → 1 → empty.
+• Tap Check to highlight wrong cells.
+• Tap Reveal to show the solution.
+]]
+
+local GAME_RULES_FR = [[
+Remplissez chaque ligne et colonne avec autant de 0 que de 1.
+• Pas trois valeurs identiques consécutives sur une ligne ou colonne.
+• Appuyez sur une case pour faire défiler : vide → 0 → 1 → vide.
+• Appuyez sur Vérifier pour mettre en évidence les cases incorrectes.
+• Appuyez sur Révéler pour afficher la solution.
+]]
 
 -- ---------------------------------------------------------------------------
 -- BinairoScreen
@@ -72,6 +90,19 @@ function BinairoScreen:buildLayout()
 
     local is_landscape = self:isLandscape()
     local sw = DeviceScreen:getWidth()
+    local sh = DeviceScreen:getHeight()
+
+    -- Title bar (full width, pinned to top)
+    local title_bar = TitleBar:new{
+        width                  = sw,
+        title                  = _("Binairo"),
+        left_icon              = "appbar.menu",
+        left_icon_tap_callback = function() self:openOptionsMenu() end,
+        close_callback         = function() self:closeScreen() end,
+        with_bottom_line       = true,
+    }
+    local tb_h = title_bar:getSize().h
+
     local board_frame = FrameContainer:new{
         padding = Size.padding.large,
         margin  = Size.margin.default,
@@ -83,64 +114,43 @@ function BinairoScreen:buildLayout()
         and math.max(sw - board_sz - Size.span.horizontal_default, 100)
         or  math.floor(sw * 0.9)
 
-    local top_buttons = ButtonTable:new{
+    -- Footer: game-specific actions
+    local footer = ButtonTable:new{
         shrink_unneeded_width = true,
         width   = btn_w,
-        buttons = {
-            {
-                { text = _("New game"), callback = function() self:onNewGame() end },
-                { id = "size_btn",  text = self:_sizeLabel(),
-                  callback = function() self:_openSizeMenu() end },
-                { id = "diff_btn",  text = self:_diffLabel(),
-                  callback = function() self:_openDiffMenu() end },
-                self:makeCloseButtonConfig(),
-            },
-        },
+        buttons = {{
+            { id = "undo_btn", text = _("Undo"),   callback = function() self:onUndo() end },
+            { text = _("Check"),                   callback = function() self:onCheck() end },
+            { text = _("Reveal"),                  callback = function() self:onReveal() end },
+        }},
     }
-    self.size_btn = top_buttons:getButtonById("size_btn")
-    self.diff_btn = top_buttons:getButtonById("diff_btn")
-
-    local bottom_buttons = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width   = btn_w,
-        buttons = {
-            {
-                { id = "undo_btn", text = _("Undo"),   callback = function() self:onUndo() end },
-                { text = _("Check"),                   callback = function() self:onCheck() end },
-                { text = _("Reveal"),                  callback = function() self:onReveal() end },
-                self:makeRulesButtonConfig(
-                    "Fill every row and column with equal 0s and 1s.\n"
-                 .. "• No three consecutive identical values in any row or column.\n"
-                 .. "• Tap a cell to cycle: empty → 0 → 1 → empty.\n"
-                 .. "• Tap Check to highlight wrong cells.\n"
-                 .. "• Tap Reveal to show the solution.",
-                    "Remplissez chaque ligne et colonne avec autant de 0 que de 1.\n"
-                 .. "• Pas trois valeurs identiques consécutives sur une ligne ou colonne.\n"
-                 .. "• Appuyez sur une case pour faire défiler : vide → 0 → 1 → vide.\n"
-                 .. "• Appuyez sur Vérifier pour mettre en évidence les cases incorrectes.\n"
-                 .. "• Appuyez sur Révéler pour afficher la solution."
-                ),
-            },
-        },
-    }
-    self.undo_btn = bottom_buttons:getButtonById("undo_btn")
+    self.undo_btn = footer:getButtonById("undo_btn")
     self:_updateUndoBtn()
 
     if is_landscape then
+        local avail_h = sh - tb_h
         local right = VerticalGroup:new{
             align = "center",
-            top_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
             VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
+            footer,
         }
-        self.layout = HorizontalGroup:new{
-            align = "center",
+        local game_row = HorizontalGroup:new{
+            align  = "center",
             board_frame,
             HorizontalSpan:new{ width = Size.span.horizontal_default },
             right,
         }
+        local game_h   = game_row:getSize().h
+        local top_span = math.max(0, math.floor((avail_h - game_h) / 2))
+        local bot_span = math.max(0, avail_h - top_span - game_h)
+        self.layout = VerticalGroup:new{
+            title_bar,
+            VerticalSpan:new{ width = top_span },
+            game_row,
+            VerticalSpan:new{ width = bot_span },
+        }
+        self[1] = self.layout
     else
         local content = VerticalGroup:new{
             align = "center",
@@ -148,10 +158,41 @@ function BinairoScreen:buildLayout()
             VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
         }
-        self:buildPortraitLayout(top_buttons, content, bottom_buttons)
+        self:buildPortraitLayout(title_bar, content, footer)
     end
-    self[1] = self.layout
     self:updateStatus()
+end
+
+-- ---------------------------------------------------------------------------
+-- Options menu
+-- ---------------------------------------------------------------------------
+
+function BinairoScreen:openOptionsMenu()
+    local dlg
+    dlg = ButtonDialog:new{
+        title = _("Binairo"),
+        buttons = {
+            {{ text = _("New game"), callback = function()
+                UIManager:close(dlg)
+                self:onNewGame()
+            end }},
+            {{ text = T(_("Grid: %1"), self:_sizeLabel()),
+               callback = function()
+                UIManager:close(dlg)
+                self:_openSizeMenu()
+            end }},
+            {{ text = T(_("Difficulty: %1"), self:_diffLabel()),
+               callback = function()
+                UIManager:close(dlg)
+                self:_openDiffMenu()
+            end }},
+            {{ text = _("Rules"), callback = function()
+                UIManager:close(dlg)
+                self:showRules(_.lang() == "fr" and GAME_RULES_FR or GAME_RULES_EN)
+            end }},
+        },
+    }
+    UIManager:show(dlg)
 end
 
 -- ---------------------------------------------------------------------------
@@ -187,7 +228,6 @@ function BinairoScreen:onNewGame()
         self.plugin:getSetting("difficulty", "easy")
     )
     self.plugin:saveState(self.board:serialize())
-    -- Rebuild widget for new grid size
     self:_rebuildBoardWidget()
     self:updateStatus(_("New game started."))
 end
@@ -260,12 +300,12 @@ end
 
 function BinairoScreen:_sizeLabel()
     local sz = self.plugin:getSetting("grid_size", "8")
-    return T(_("Grid: %1"), sz .. "×" .. sz)
+    return sz .. "×" .. sz
 end
 
 function BinairoScreen:_diffLabel()
     local d = self.plugin:getSetting("difficulty", "easy")
-    return T(_("Diff: %1"), MenuHelper.DIFFICULTY_LABELS[d] or d)
+    return MenuHelper.DIFFICULTY_LABELS[d] or d
 end
 
 function BinairoScreen:_openSizeMenu()
@@ -276,9 +316,6 @@ function BinairoScreen:_openSizeMenu()
         values    = SIZES,
         on_select = function(id)
             self.plugin:saveSetting("grid_size", id)
-            if self.size_btn then
-                self.size_btn:setText(self:_sizeLabel(), self.size_btn.width)
-            end
             self:onNewGame()
         end,
     }
@@ -290,9 +327,6 @@ function BinairoScreen:_openDiffMenu()
         parent    = self,
         on_select = function(id)
             self.plugin:saveSetting("difficulty", id)
-            if self.diff_btn then
-                self.diff_btn:setText(self:_diffLabel(), self.diff_btn.width)
-            end
             self:onNewGame()
         end,
     }
