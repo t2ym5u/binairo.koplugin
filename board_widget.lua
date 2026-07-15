@@ -1,9 +1,9 @@
 local Blitbuffer = require("ffi/blitbuffer")
+local RenderText = require("ui/rendertext")
 local common     = require("grid_widget_base")
 
-local GridWidgetBase   = common.GridWidgetBase
-local drawLine         = common.drawLine
-local drawCenteredText = common.drawCenteredText
+local GridWidgetBase = common.GridWidgetBase
+local drawLine       = common.drawLine
 
 -- Gray levels (e-ink palette)
 local BG_GIVEN  = Blitbuffer.COLOR_GRAY_E   -- very light gray for given cells
@@ -73,9 +73,10 @@ function BinairoBoardWidget:paintTo(bb, x, y)
                 local color = is_error and FG_ERROR
                            or is_given and FG_GIVEN
                            or              FG_PLAYER
-                local tcx = cx + math.floor(cw_px / 2)
-                local tcy = cy + math.floor(ch_px / 2)
-                drawCenteredText(bb, text, face, tcx, tcy, color)
+                local m    = RenderText:sizeUtf8Text(0, cw_px, face, text, true, false)
+                local lx   = cx + math.floor((cw_px - m.x) / 2)
+                local base = cy + math.floor((ch_px + m.y_top - m.y_bottom) / 2)
+                RenderText:renderUtf8Text(bb, lx, base, face, text, true, false, color)
             end
         end
     end
