@@ -8,8 +8,11 @@ local _         = require("i18n")
 -- Rules:
 --   1. Each row and each column contains exactly n/2 zeros and n/2 ones.
 --   2. No three consecutive identical values in any row or column.
---   3. All rows are distinct and all columns are distinct (soft — not enforced
---      in the generator for simplicity, very rare violation on small grids).
+--   3. All rows are distinct and all columns are distinct (enforced by
+--      `_fill` since 2026-07-22 — a violation here previously meant the
+--      stored solution could be one of several valid completions for a
+--      given clue set, undetectable by the old flat-ratio clue reveal; see
+--      docs/generator_robustness_audit.md's Tier 2 table).
 --
 -- Cell values: nil (empty), 0, or 1.
 -- ---------------------------------------------------------------------------
@@ -87,20 +90,160 @@ function BinairoBoard:_canPlace(grid, r, c, v)
     return true
 end
 
+-- Rows/columns must all be pairwise distinct (see the module doc comment):
+-- this was previously "soft — not enforced", which meant `self.solution`
+-- could itself violate its own genre rule, making the uniqueness-check
+-- fixed into `generate()` below (added 2026-07-22) find that even the
+-- stored solution didn't qualify as valid. Enforcing it here too keeps
+-- `_fill` and the uniqueness counter consistent about what "a valid
+-- completion" means.
+function BinairoBoard:_rowsDistinctSoFar(grid, r, n)
+    for r2 = 1, r - 1 do
+        local same = true
+        for c = 1, n do if grid[r2][c] ~= grid[r][c] then same = false; break end end
+        if same then return false end
+    end
+    return true
+end
+
+function BinairoBoard:_colsAllDistinct(grid, n)
+    for c1 = 1, n do
+        for c2 = c1 + 1, n do
+            local same = true
+            for r = 1, n do if grid[r][c1] ~= grid[r][c2] then same = false; break end end
+            if same then return false end
+        end
+    end
+    return true
+end
+
 function BinairoBoard:_fill(grid, pos)
     local n = self.n
-    if pos > n * n then return true end
+    if pos > n * n then
+        return self:_colsAllDistinct(grid, n)
+    end
     local r = math.ceil(pos / n)
     local c = ((pos - 1) % n) + 1
     local vals = math.random(2) == 1 and {0, 1} or {1, 0}
     for _, v in ipairs(vals) do
         if self:_canPlace(grid, r, c, v) then
             grid[r][c] = v
-            if self:_fill(grid, pos + 1) then return true end
+            local row_ok = (c < n) or self:_rowsDistinctSoFar(grid, r, n)
+            if row_ok and self:_fill(grid, pos + 1) then return true end
             grid[r][c] = nil
         end
     end
     return false
+end
+
+-- Counts solutions (up to `limit`) of the Binairo instance given the
+-- current `given`/`cells` fixed values, using MRV cell ordering. Returns
+-- (solutions_found, exhausted); exhausted=true means node_budget was hit
+-- before the search concluded, so the count isn't proof. Mirrors
+-- sudokukiller.koplugin/board.lua's countCageSolutions.
+local NODE_BUDGET_UNIQUENESS = 200000
+
+local function countSolutions(cells, given, n, limit, node_budget)
+    local grid = {}
+    for r = 1, n do
+        grid[r] = {}
+        for c = 1, n do grid[r][c] = given[r][c] and cells[r][c] or -1 end
+    end
+
+    local solutions, nodes, exhausted = 0, 0, false
+
+    local function canPlace(r, c, v)
+        local left = 0
+        for j = c - 1, math.max(1, c - 2), -1 do
+            if grid[r][j] == v then left = left + 1 else break end
+        end
+        local right = 0
+        for j = c + 1, math.min(n, c + 2) do
+            if grid[r][j] == v then right = right + 1 else break end
+        end
+        if left + right >= 2 then return false end
+        local up = 0
+        for i = r - 1, math.max(1, r - 2), -1 do
+            if grid[i][c] == v then up = up + 1 else break end
+        end
+        local down = 0
+        for i = r + 1, math.min(n, r + 2) do
+            if grid[i][c] == v then down = down + 1 else break end
+        end
+        if up + down >= 2 then return false end
+        local rc = 0
+        for j = 1, n do if grid[r][j] == v then rc = rc + 1 end end
+        if rc >= n / 2 then return false end
+        local cc = 0
+        for i = 1, n do if grid[i][c] == v then cc = cc + 1 end end
+        if cc >= n / 2 then return false end
+        return true
+    end
+
+    local empties = {}
+    for r = 1, n do for c = 1, n do if grid[r][c] == -1 then empties[#empties + 1] = { r = r, c = c } end end end
+
+    local function candidatesFor(r, c)
+        local cands = {}
+        for _, v in ipairs({ 0, 1 }) do if canPlace(r, c, v) then cands[#cands + 1] = v end end
+        return cands
+    end
+
+    -- Rows/columns must also all be pairwise distinct (a real Binairo rule
+    -- -- see the module doc comment -- not enforced by `_fill`'s solution
+    -- construction, but still a constraint on which grids count as valid
+    -- completions here: checkErrors/_isComplete compare a player's answer
+    -- directly against the stored solution, so any OTHER grid satisfying
+    -- every rule would wrongly read as "incorrect" if it existed).
+    local function rowFull(r) for c = 1, n do if grid[r][c] == -1 then return false end end return true end
+    local function colFull(c) for r = 1, n do if grid[r][c] == -1 then return false end end return true end
+    local function rowDistinct(r)
+        for r2 = 1, r - 1 do
+            local same = true
+            for c = 1, n do if grid[r2][c] ~= grid[r][c] then same = false; break end end
+            if same then return false end
+        end
+        return true
+    end
+    local function colDistinct(c)
+        for c2 = 1, c - 1 do
+            local same = true
+            for r = 1, n do if grid[r][c2] ~= grid[r][c] then same = false; break end end
+            if same then return false end
+        end
+        return true
+    end
+
+    local function search(depth)
+        if solutions >= limit or exhausted then return end
+        nodes = nodes + 1
+        if nodes > node_budget then exhausted = true; return end
+        if depth > #empties then solutions = solutions + 1; return end
+        local best_idx, best_cands, best_len = nil, nil, 3
+        for i, cell in ipairs(empties) do
+            if grid[cell.r][cell.c] == -1 then
+                local cands = candidatesFor(cell.r, cell.c)
+                if #cands < best_len then
+                    best_len, best_cands, best_idx = #cands, cands, i
+                    if best_len <= 1 then break end
+                end
+            end
+        end
+        if best_idx == nil then solutions = solutions + 1; return end
+        if best_len == 0 then return end
+        local cell = empties[best_idx]
+        for _, v in ipairs(best_cands) do
+            grid[cell.r][cell.c] = v
+            local ok = true
+            if rowFull(cell.r) and not rowDistinct(cell.r) then ok = false end
+            if ok and colFull(cell.c) and not colDistinct(cell.c) then ok = false end
+            if ok then search(depth + 1) end
+            grid[cell.r][cell.c] = -1
+            if solutions >= limit or exhausted then return end
+        end
+    end
+    search(1)
+    return solutions, exhausted
 end
 
 function BinairoBoard:generate(n, difficulty)
@@ -118,14 +261,20 @@ function BinairoBoard:generate(n, difficulty)
     self:_fill(grid, 1)
     self.solution = copy2d(grid, self.n)
 
-    -- Create puzzle by masking cells.
+    -- Dig cells one at a time (like sudoku-common's hole-digging), starting
+    -- fully revealed and verifying with countSolutions after each tentative
+    -- removal, putting the cell back if that broke uniqueness -- the old
+    -- "mask a flat ratio of cells" approach never checked this (see
+    -- docs/generator_robustness_audit.md's Tier 2 table: measured 0%
+    -- unique at every size/difficulty tested).
     local ratio = REVEAL[self.difficulty] or 0.5
     local positions = {}
     for i = 1, self.n do
-        for j = 1, self.n do positions[#positions+1] = {i, j} end
+        for j = 1, self.n do positions[#positions + 1] = { i, j } end
     end
     shuffle(positions)
-    local to_give = math.floor(self.n * self.n * ratio)
+    local total        = self.n * self.n
+    local target_hide  = total - math.floor(total * ratio)
 
     self.cells = {}
     self.given = {}
@@ -133,14 +282,23 @@ function BinairoBoard:generate(n, difficulty)
         self.cells[i] = {}
         self.given[i] = {}
         for j = 1, self.n do
-            self.cells[i][j] = nil
-            self.given[i][j] = false
+            self.cells[i][j] = self.solution[i][j]
+            self.given[i][j] = true
         end
     end
-    for k = 1, math.min(to_give, #positions) do
-        local r, c = positions[k][1], positions[k][2]
-        self.cells[r][c] = self.solution[r][c]
-        self.given[r][c] = true
+
+    local hidden = 0
+    for _, pos in ipairs(positions) do
+        if hidden >= target_hide then break end
+        local r, c = pos[1], pos[2]
+        self.given[r][c] = false
+        local solutions, exhausted = countSolutions(self.cells, self.given, self.n, 2, NODE_BUDGET_UNIQUENESS)
+        if not exhausted and solutions == 1 then
+            self.cells[r][c] = nil
+            hidden = hidden + 1
+        else
+            self.given[r][c] = true
+        end
     end
 end
 
