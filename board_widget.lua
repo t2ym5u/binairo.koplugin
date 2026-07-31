@@ -7,7 +7,7 @@ local drawLine       = common.drawLine
 
 -- Gray levels (e-ink palette)
 local BG_GIVEN  = Blitbuffer.COLOR_GRAY_E   -- very light gray for given cells
-local BG_ERROR  = Blitbuffer.COLOR_GRAY_A   -- medium gray for wrong cells
+local BG_ERROR  = Blitbuffer.COLOR_GRAY   -- medium gray for wrong cells
 local FG_GIVEN  = Blitbuffer.COLOR_BLACK
 local FG_PLAYER = Blitbuffer.COLOR_GRAY_4   -- darker gray for player-entered values
 local FG_ERROR  = Blitbuffer.COLOR_WHITE
