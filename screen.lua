@@ -114,6 +114,8 @@ function BinairoScreen:buildLayout()
         and math.max(sw - board_sz - Size.span.horizontal_default, 100)
         or  math.floor(sw * 0.9)
 
+    self.status_text:setMaxWidth(is_landscape and btn_w or board_sz)
+
     -- Footer: game-specific actions
     local footer = ButtonTable:new{
         shrink_unneeded_width = true,
