@@ -4,7 +4,7 @@ A Binairo (Takuzu) puzzle plugin for [KOReader](https://github.com/koreader/kore
 
 ## Screenshot
 
-*(Screenshot to be added.)*
+![Screenshot](images/binairo.png)
 
 ## Rules
 
