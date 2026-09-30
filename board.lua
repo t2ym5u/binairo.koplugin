@@ -1,6 +1,7 @@
 local UndoStack = require("undo_stack")
 local Timer     = require("timer")
 local _         = require("i18n")
+local Hint       = require("hint")
 
 -- ---------------------------------------------------------------------------
 -- BinairoBoard — game logic
@@ -321,6 +322,20 @@ function BinairoBoard:toggle(r, c)
     return true
 end
 
+-- Like toggle(), but goes straight to a value instead of cycling. Used by the
+-- Hint button, and undoable through the same stack as any hand-made move.
+function BinairoBoard:setCellValue(r, c, v)
+    if self.given[r] and self.given[r][c] then return false end
+    if self.solved then return false end
+    local cur = self.cells[r] and self.cells[r][c]
+    if cur == v then return true end
+    self.undo:push({ r = r, c = c, old = cur, new = v })
+    self.cells[r][c] = v
+    self.errors = {}
+    self.solved = self:_isComplete()
+    return true
+end
+
 function BinairoBoard:undoLast()
     local move = self.undo:pop()
     if not move then return false, _("Nothing to undo.") end
@@ -383,6 +398,16 @@ end
 -- ---------------------------------------------------------------------------
 -- Persistence
 -- ---------------------------------------------------------------------------
+
+-- 0 is a real value here, not an empty cell, so the default "empty" test
+-- (nil/0/false) would read every placed zero as a blank.
+Hint.install(BinairoBoard, {
+    isEmpty     = function(v) return v == nil end,
+    getUser     = function(b, r, c) return b.cells[r] and b.cells[r][c] end,
+    getSolution = function(b, r, c) return b.solution[r][c] end,
+    isGiven     = function(b, r, c) return b.given[r] and b.given[r][c] end,
+    setCell     = function(b, r, c, v) return b:setCellValue(r, c, v) end,
+})
 
 function BinairoBoard:serialize()
     return {
