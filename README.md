@@ -19,6 +19,7 @@ Fill the grid with 0s and 1s so that every row and column has an equal number of
 - **Reveal solution**
 - **Undo**
 - **Auto-save** — puzzle state saved and restored on next launch
+- **Hint** — two taps: the first says which cell is about to give, the second acts on it. A cell that contradicts the solution is always reported before a fresh one is revealed
 
 ## Controls
 
