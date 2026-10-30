@@ -7,15 +7,10 @@ local function lrequire(name)
     return package.loaded[key]
 end
 
-local ButtonDialog    = require("ui/widget/buttondialog")
-local ButtonTable     = require("ui/widget/buttontable")
-local Device          = require("device")
 local FrameContainer  = require("ui/widget/container/framecontainer")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan  = require("ui/widget/horizontalspan")
 local Size            = require("ui/size")
-local TitleBar        = require("ui/widget/titlebar")
-local UIManager       = require("ui/uimanager")
 local VerticalGroup   = require("ui/widget/verticalgroup")
 local VerticalSpan    = require("ui/widget/verticalspan")
 local T               = require("ffi/util").template
@@ -26,8 +21,6 @@ local MenuHelper      = require("menu_helper")
 
 local BinairoBoard       = lrequire("board")
 local BinairoBoardWidget = lrequire("board_widget")
-
-local DeviceScreen = Device.screen
 
 local SIZES = {
     { id = "6",  text = "6×6"   },
@@ -83,119 +76,65 @@ end
 -- ---------------------------------------------------------------------------
 
 function BinairoScreen:buildLayout()
+    local is_landscape = self:isLandscape()
+
+    local title_bar = self:buildTitleBar(_("Binairo"), function()
+        return {
+            { text = _("New game"), callback = function() self:onNewGame() end },
+            { text = T(_("Size: %1"), self:_sizeLabel()),
+              callback = function() self:_openSizeMenu() end },
+            { text = T(_("Difficulty: %1"), self:_diffLabel()),
+              callback = function() self:_openDiffMenu() end },
+            self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
+        }
+    end)
+
+    -- Controls first: the board is sized from whatever room they leave.
+    self.status_text:setMaxWidth(self:getControlsWidth())
+    local action_bar = self:buildActionBar({
+        { id = "undo_btn", text = _("Undo"),   callback = function() self:onUndo() end },
+        { text = _("Check"),                   callback = function() self:onCheck() end },
+        { text = _("Hint"),                    callback = function() self:onHint() end },
+        { text = _("Reveal"),                  callback = function() self:onReveal() end },
+    })
+    self.undo_btn = action_bar:getButtonById("undo_btn")
+    local controls = VerticalGroup:new{
+        align = "center",
+        self.status_text,
+        VerticalSpan:new{ width = Size.span.vertical_large },
+        action_bar,
+    }
+
+    -- The widget draws its own thick outer border, so the frame only pads.
+    local frame_pad   = Size.padding.large
+    local frame_extra = 2 * frame_pad
+    local budget_w, budget_h = self:getBoardBudget(title_bar, controls)
     self.board_widget = BinairoBoardWidget:new{
         board          = self.board,
+        max_size       = math.min(budget_w, budget_h) - frame_extra,
         onCellSelected = function(r, c) self:onCellSelected(r, c) end,
     }
-
-    local is_landscape = self:isLandscape()
-    local sw = DeviceScreen:getWidth()
-    local sh = DeviceScreen:getHeight()
-
-    -- Title bar (full width, pinned to top)
-    local title_bar = TitleBar:new{
-        width                  = sw,
-        title                  = _("Binairo"),
-        left_icon              = "appbar.menu",
-        left_icon_tap_callback = function() self:openOptionsMenu() end,
-        close_callback         = function() self:closeScreen() end,
-        with_bottom_line       = true,
-    }
-    local tb_h = title_bar:getSize().h
-
     local board_frame = FrameContainer:new{
-        padding = Size.padding.large,
-        margin  = Size.margin.default,
+        padding    = frame_pad,
+        margin     = 0,
+        bordersize = 0,
         self.board_widget,
     }
-    local board_sz = self.board_widget.size
-        + (Size.padding.large + Size.margin.default) * 2
-    local btn_w = is_landscape
-        and math.max(sw - board_sz - Size.span.horizontal_default, 100)
-        or  math.floor(sw * 0.9)
-
-    self.status_text:setMaxWidth(is_landscape and btn_w or board_sz)
-
-    -- Footer: game-specific actions
-    local footer = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width   = btn_w,
-        buttons = {{
-            { id = "undo_btn", text = _("Undo"),   callback = function() self:onUndo() end },
-            { text = _("Check"),                   callback = function() self:onCheck() end },
-            { text = _("Hint"),                    callback = function() self:onHint() end },
-            { text = _("Reveal"),                  callback = function() self:onReveal() end },
-        }},
-    }
-    self.undo_btn = footer:getButtonById("undo_btn")
     self:_updateUndoBtn()
 
     if is_landscape then
-        local avail_h = sh - tb_h
-        local right = VerticalGroup:new{
+        local content = HorizontalGroup:new{
             align = "center",
-            self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            footer,
-        }
-        local game_row = HorizontalGroup:new{
-            align  = "center",
             board_frame,
-            HorizontalSpan:new{ width = Size.span.horizontal_default },
-            right,
+            HorizontalSpan:new{ width = self:getGutter() },
+            controls,
         }
-        local game_h   = game_row:getSize().h
-        local top_span = math.max(0, math.floor((avail_h - game_h) / 2))
-        local bot_span = math.max(0, avail_h - top_span - game_h)
-        self.layout = VerticalGroup:new{
-            title_bar,
-            VerticalSpan:new{ width = top_span },
-            game_row,
-            VerticalSpan:new{ width = bot_span },
-        }
-        self[1] = self.layout
+        self:buildLandscapeLayout(title_bar, content)
     else
-        local content = VerticalGroup:new{
-            align = "center",
-            board_frame,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            self.status_text,
-        }
-        self:buildPortraitLayout(title_bar, content, footer)
+        self:buildPortraitLayout(title_bar, board_frame,
+            VerticalGroup:new{ align = "center", controls, VerticalSpan:new{ width = self:getGutter() } })
     end
     self:updateStatus()
-end
-
--- ---------------------------------------------------------------------------
--- Options menu
--- ---------------------------------------------------------------------------
-
-function BinairoScreen:openOptionsMenu()
-    local dlg
-    dlg = ButtonDialog:new{
-        title = _("Binairo"),
-        buttons = {
-            {{ text = _("New game"), callback = function()
-                UIManager:close(dlg)
-                self:onNewGame()
-            end }},
-            {{ text = T(_("Grid: %1"), self:_sizeLabel()),
-               callback = function()
-                UIManager:close(dlg)
-                self:_openSizeMenu()
-            end }},
-            {{ text = T(_("Difficulty: %1"), self:_diffLabel()),
-               callback = function()
-                UIManager:close(dlg)
-                self:_openDiffMenu()
-            end }},
-            {{ text = _("Rules"), callback = function()
-                UIManager:close(dlg)
-                self:showRules(_.lang() == "fr" and GAME_RULES_FR or GAME_RULES_EN)
-            end }},
-        },
-    }
-    UIManager:show(dlg)
 end
 
 -- ---------------------------------------------------------------------------
@@ -217,6 +156,7 @@ function BinairoScreen:onCellSelected(r, c)
         else
             self:updateStatus()
         end
+        self:refreshActionBar()
     end
 end
 
@@ -233,6 +173,7 @@ function BinairoScreen:onNewGame()
     self.plugin:saveState(self.board:serialize())
     self:_rebuildBoardWidget()
     self:updateStatus(_("New game started."))
+    self:refreshActionBar()
 end
 
 function BinairoScreen:_rebuildBoardWidget()
@@ -254,6 +195,7 @@ function BinairoScreen:onUndo()
         self.plugin:saveState(self.board:serialize())
     end
     self:_updateUndoBtn()
+    self:refreshActionBar()
 end
 
 function BinairoScreen:onCheck()
@@ -275,6 +217,17 @@ function BinairoScreen:onReveal()
     self.board_widget:refresh()
     self.plugin:saveState(self.board:serialize())
     self:updateStatus(_("Solution revealed."))
+    self:refreshActionBar()
+end
+
+function BinairoScreen:isRoundOver()
+    return self.board.solved
+end
+
+-- A hint can place the last cell, so the round may end here.
+function BinairoScreen:onHint()
+    ScreenBase.onHint(self)
+    self:refreshActionBar()
 end
 
 -- ---------------------------------------------------------------------------
@@ -288,11 +241,10 @@ function BinairoScreen:updateStatus(msg)
     elseif self.board.solved then
         text = T(_("Solved! Time: %1"), self.board.timer:format())
     else
-        local empty = self.board:emptyCells()
-        text = T(_("Empty: %1"), empty)
-                .. "  \xC2\xB7  "
-                .. T(_("Diff: %1"), MenuHelper.DIFFICULTY_LABELS[self.board.difficulty]
-                                    or self.board.difficulty)
+        text = self:joinStatus(
+            T("%1×%1", self.board.n),
+            MenuHelper.DIFFICULTY_LABELS[self.board.difficulty] or self.board.difficulty,
+            T(_("Empty: %1"), self.board:emptyCells()))
     end
     ScreenBase.updateStatus(self, text)
 end
@@ -313,11 +265,11 @@ end
 
 function BinairoScreen:_openSizeMenu()
     MenuHelper.openPickerMenu{
-        title     = _("Select grid size"),
-        current   = self.plugin:getSetting("grid_size", "8"),
-        parent    = self,
-        values    = SIZES,
-        on_select = function(id)
+        title      = _("Select size"),
+        current_id = self.plugin:getSetting("grid_size", "8"),
+        parent     = self,
+        items      = SIZES,
+        on_select  = function(id)
             self.plugin:saveSetting("grid_size", id)
             self:onNewGame()
         end,

@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-10-30
+
+### Changed
+- Redesigned play screen: the grid fills the room the controls leave, framed
+  by one thick border of its own, with a full-width Undo/Check/Hint/Reveal
+  bar.
+- The menu is the regular title-bar menu shared by every game, instead of a
+  separate pop-up: New game, "Size: 8×8" (was "Grid: 8×8"), "Difficulty:
+  Medium", Rules.
+- The status line reads "8×8 · Medium · Empty: 32" and wraps in landscape
+  instead of being cut off.
+- Once the grid is solved (or revealed), the action bar shows "New game" in
+  place of its buttons.
+
+### Fixed
+- The size picker opened empty: it was passed option names the shared menu
+  helper does not read.
+- An applied Hint no longer wipes the saved game (game-common saved it as
+  nil). When a hint fills the last cell, the status now shows the win message.
+
 ## [1.1.1] - 2026-10-01
 
 ### Fixed
