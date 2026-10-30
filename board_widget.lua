@@ -1,5 +1,6 @@
 local Blitbuffer = require("ffi/blitbuffer")
 local RenderText = require("ui/rendertext")
+local Size       = require("ui/size")
 local common     = require("grid_widget_base")
 
 local GridWidgetBase = common.GridWidgetBase
@@ -81,15 +82,21 @@ function BinairoBoardWidget:paintTo(bb, x, y)
         end
     end
 
-    -- Grid lines
-    for c = 0, n do
+    -- Grid lines: thin inside, a thick outer border drawn inside the
+    -- widget's own rect (the screen's frame has no border of its own).
+    for c = 1, n - 1 do
         local lx = x + math.floor(c * cw)
         drawLine(bb, lx, y, 1, rect.h, Blitbuffer.COLOR_BLACK)
     end
-    for r = 0, n do
+    for r = 1, n - 1 do
         local ly = y + math.floor(r * ch)
         drawLine(bb, x, ly, rect.w, 1, Blitbuffer.COLOR_BLACK)
     end
+    local bw = math.max(2, Size.line.thick)
+    drawLine(bb, x,              y,              rect.w, bw, Blitbuffer.COLOR_BLACK)
+    drawLine(bb, x,              y + rect.h - bw, rect.w, bw, Blitbuffer.COLOR_BLACK)
+    drawLine(bb, x,              y,              bw, rect.h, Blitbuffer.COLOR_BLACK)
+    drawLine(bb, x + rect.w - bw, y,              bw, rect.h, Blitbuffer.COLOR_BLACK)
 end
 
 return BinairoBoardWidget
