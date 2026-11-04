@@ -149,4 +149,100 @@ describe("BinairoBoard", function()
             end
         end)
     end)
+    -- 1.4.0: row-at-a-time fill + forced-opposite uniqueness check.
+    describe("generator (1.4.0 speed-up)", function()
+        local function checkSolution(b)
+            local n, half = b.n, b.n / 2
+            local rows, cols = {}, {}
+            for r = 1, n do
+                local ones, rk, ck, cones = 0, "", "", 0
+                for c = 1, n do
+                    local v = b.solution[r][c]
+                    assert.is_true(v == 0 or v == 1)
+                    ones = ones + v
+                    rk = rk .. v
+                    if c > 2 then
+                        assert.is_false(v == b.solution[r][c - 1] and v == b.solution[r][c - 2])
+                    end
+                    local w = b.solution[c][r]
+                    cones = cones + w
+                    ck = ck .. w
+                    if c > 2 then
+                        assert.is_false(w == b.solution[c - 1][r] and w == b.solution[c - 2][r])
+                    end
+                end
+                assert.are.equal(half, ones)
+                assert.are.equal(half, cones)
+                assert.is_nil(rows[rk]); rows[rk] = true
+                assert.is_nil(cols[ck]); cols[ck] = true
+            end
+        end
+
+        it("builds valid, uniquely solvable puzzles at every size", function()
+            for _, n in ipairs({ 6, 8, 10, 12 }) do
+                for seed = 1, 6 do
+                    math.randomseed(seed * 101 + n)
+                    local b = Board:new()
+                    b:generate(n, "hard")
+                    checkSolution(b)
+                    local count = Board._countSolutions(b.cells, b.given, n, 2, 2000000)
+                    assert.are.equal(1, count)
+                end
+            end
+        end)
+
+        it("hasOtherSolution agrees with the solution counter", function()
+            -- Each removal is checked with both; the new check ignores the
+            -- distinct-lines rule, so it may only ever be stricter.
+            local stricter = 0 -- counted for debugging only
+            for seed = 1, 4 do
+                math.randomseed(seed)
+                local n = 8
+                local b = Board:new()
+                b:generate(n, "easy")
+                local cells, given = {}, {}
+                for r = 1, n do
+                    cells[r], given[r] = {}, {}
+                    for c = 1, n do cells[r][c] = b.solution[r][c]; given[r][c] = true end
+                end
+                for r = 1, n do
+                    for c = 1, n do
+                        given[r][c] = false
+                        local other = Board._hasOtherSolution(cells, given, n, r, c, 1e9, b.solution)
+                        local count = Board._countSolutions(cells, given, n, 2, 1e9)
+                        if not other then assert.are.equal(1, count) end
+                        if other and count == 1 then stricter = stricter + 1 end
+                        if not other then cells[r][c] = nil else given[r][c] = true end
+                    end
+                end
+            end
+        end)
+
+        it("gives the same puzzle for the same seed", function()
+            math.randomseed(777); local a = Board:new(); a:generate(10, "medium")
+            math.randomseed(777); local b = Board:new(); b:generate(10, "medium")
+            assert.are.same(a.solution, b.solution)
+            assert.are.same(a.given, b.given)
+        end)
+
+        it("generates 12x12 Hard quickly", function()
+            local t0 = os.clock()
+            for seed = 1, 5 do
+                math.randomseed(seed)
+                Board:new():generate(12, "hard")
+            end
+            -- ~15 ms each in LuaJIT; very generous for plain Lua.
+            assert.is_true(os.clock() - t0 < 10)
+        end)
+
+        it("reports progress while digging", function()
+            math.randomseed(3)
+            local last, calls = -1, 0
+            Board:new():generate(8, "medium", function(f)
+                assert.is_true(f >= last and f <= 1)
+                last, calls = f, calls + 1
+            end)
+            assert.is_true(calls > 0)
+        end)
+    end)
 end)

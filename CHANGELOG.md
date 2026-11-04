@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-11-04
+
+### Changed
+- Much faster puzzle generation. The solution grid is now built a whole row
+  at a time; the old cell-by-cell construction occasionally got stuck
+  backtracking (12×12: up to 1.6 s on a desktop, i.e. most of a minute on a
+  Kobo). The uniqueness check only has to rule out the other value in the
+  cell being removed. 12×12 Hard now takes at most ~35 ms on a desktop
+  (about 1 s on a Kobo), 10×10 at most ~20 ms (was 60-135 ms).
+- A progress bar appears if generating takes more than a moment.
+- Puzzles are now unique even without the "no two identical rows or
+  columns" rule, which the in-game rules don't mention.
+- Grids differ from 1.3.x for the same seed (today's Daily Challenge grid
+  changes once after updating).
+
 ## [1.3.3] - 2026-11-03
 
 ### Changed

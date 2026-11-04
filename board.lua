@@ -2,6 +2,7 @@ local UndoStack = require("undo_stack")
 local Timer     = require("timer")
 local _         = require("i18n")
 local Hint       = require("hint")
+local bit        = require("bit")
 
 -- ---------------------------------------------------------------------------
 -- BinairoBoard — game logic
@@ -10,7 +11,7 @@ local Hint       = require("hint")
 --   1. Each row and each column contains exactly n/2 zeros and n/2 ones.
 --   2. No three consecutive identical values in any row or column.
 --   3. All rows are distinct and all columns are distinct (enforced by
---      `_fill` since 2026-07-22 — a violation here previously meant the
+--      `_fillRows` (since 2026-07-22) — a violation here previously meant the
 --      stored solution could be one of several valid completions for a
 --      given clue set, undetectable by the old flat-ratio clue reveal; see
 --      docs/generator_robustness_audit.md's Tier 2 table).
@@ -58,83 +59,109 @@ local function shuffle(t)
     end
 end
 
-function BinairoBoard:_canPlace(grid, r, c, v)
-    local n = self.n
-    -- no 3 consecutive in row
-    local left = 0
-    for j = c-1, math.max(1, c-2), -1 do
-        if grid[r][j] == v then left = left + 1 else break end
-    end
-    local right = 0
-    for j = c+1, math.min(n, c+2) do
-        if grid[r][j] == v then right = right + 1 else break end
-    end
-    if left + right >= 2 then return false end
-    -- no 3 consecutive in column
-    local up = 0
-    for i = r-1, math.max(1, r-2), -1 do
-        if grid[i][c] == v then up = up + 1 else break end
-    end
-    local down = 0
-    for i = r+1, math.min(n, r+2) do
-        if grid[i][c] == v then down = down + 1 else break end
-    end
-    if up + down >= 2 then return false end
-    -- row balance
-    local rc = 0
-    for j = 1, n do if grid[r][j] == v then rc = rc + 1 end end
-    if rc >= n/2 then return false end
-    -- column balance
-    local cc = 0
-    for i = 1, n do if grid[i][c] == v then cc = cc + 1 end end
-    if cc >= n/2 then return false end
-    return true
-end
+-- Every row pattern a solution may use (n/2 ones, n/2 zeros, no three
+-- identical values in a row), each stored as a bitmask: bit c-1 holds the
+-- value of column c. Cached per size (n = 12 has 208 patterns).
+local ROW_PATTERNS = {}
 
--- Rows/columns must all be pairwise distinct (see the module doc comment):
--- this was previously "soft — not enforced", which meant `self.solution`
--- could itself violate its own genre rule, making the uniqueness-check
--- fixed into `generate()` below (added 2026-07-22) find that even the
--- stored solution didn't qualify as valid. Enforcing it here too keeps
--- `_fill` and the uniqueness counter consistent about what "a valid
--- completion" means.
-function BinairoBoard:_rowsDistinctSoFar(grid, r, n)
-    for r2 = 1, r - 1 do
-        local same = true
-        for c = 1, n do if grid[r2][c] ~= grid[r][c] then same = false; break end end
-        if same then return false end
-    end
-    return true
-end
-
-function BinairoBoard:_colsAllDistinct(grid, n)
-    for c1 = 1, n do
-        for c2 = c1 + 1, n do
-            local same = true
-            for r = 1, n do if grid[r][c1] ~= grid[r][c2] then same = false; break end end
-            if same then return false end
+local function rowPatterns(n)
+    if ROW_PATTERNS[n] then return ROW_PATTERNS[n] end
+    local list = {}
+    local function rec(c, ones, mask, prev1, prev2)
+        if c > n then
+            if ones == n / 2 then list[#list + 1] = mask end
+            return
+        end
+        for v = 0, 1 do
+            local ones2 = ones + v
+            if ones2 <= n / 2 and c - ones2 <= n / 2
+                and not (prev1 == v and prev2 == v) then
+                rec(c + 1, ones2, mask + v * 2 ^ (c - 1), v, prev1)
+            end
         end
     end
-    return true
+    rec(1, 0, 0, -1, -1)
+    ROW_PATTERNS[n] = list
+    return list
 end
 
-function BinairoBoard:_fill(grid, pos)
-    local n = self.n
-    if pos > n * n then
-        return self:_colsAllDistinct(grid, n)
-    end
-    local r = math.ceil(pos / n)
-    local c = ((pos - 1) % n) + 1
-    local vals = math.random(2) == 1 and {0, 1} or {1, 0}
-    for _, v in ipairs(vals) do
-        if self:_canPlace(grid, r, c, v) then
-            grid[r][c] = v
-            local row_ok = (c < n) or self:_rowsDistinctSoFar(grid, r, n)
-            if row_ok and self:_fill(grid, pos + 1) then return true end
-            grid[r][c] = nil
+-- Builds a complete valid grid one whole row at a time. For each row, the
+-- column rules (balance, no three in a column) force some cells; only
+-- patterns agreeing with those forced cells are tried, from a random
+-- starting point in a shuffled pattern list. The previous cell-by-cell fill
+-- only noticed most column problems much later, so its backtracking had a
+-- heavy tail (12x12: 2 million nodes on 1 seed in 100, 30 million at worst,
+-- i.e. seconds on a desktop). Returns false when the node cap is hit; the
+-- caller then starts over (still deterministic for a given seed).
+local FILL_NODE_CAP = 2000
+
+function BinairoBoard:_fillRows(grid)
+    local n, half = self.n, self.n / 2
+    local all = rowPatterns(n)
+    local np = #all
+    local patterns = {}
+    for i = 1, np do patterns[i] = all[i] end
+    shuffle(patterns)
+    local ones, used = {}, {}
+    for c = 1, n do ones[c] = 0 end
+    local rows = {}   -- chosen pattern per row
+    local nodes = 0
+
+    local function colsDistinct()
+        for c1 = 1, n do
+            for c2 = c1 + 1, n do
+                local same = true
+                for r = 1, n do if grid[r][c1] ~= grid[r][c2] then same = false; break end end
+                if same then return false end
+            end
         end
+        return true
     end
-    return false
+
+    local function rec(r)
+        if r > n then return colsDistinct() end
+        nodes = nodes + 1
+        if nodes > FILL_NODE_CAP then return false end
+        -- Cells of this row forced by the column rules.
+        local mask, val, bitc = 0, 0, 1
+        for c = 1, n do
+            local o, z = ones[c], (r - 1) - ones[c]
+            local force
+            if o >= half then force = 0 elseif z >= half then force = 1 end
+            if r > 2 and grid[r - 1][c] == grid[r - 2][c] then
+                local opp = 1 - grid[r - 1][c]
+                if force and force ~= opp then return false end
+                force = opp
+            end
+            if force then
+                mask = mask + bitc
+                if force == 1 then val = val + bitc end
+            end
+            bitc = bitc * 2
+        end
+        local start = math.random(np)
+        for k = 0, np - 1 do
+            local p = patterns[(start + k - 1) % np + 1]
+            if not used[p] and bit.band(p, mask) == val then
+                used[p] = true
+                rows[r] = p
+                local row, x = grid[r], p
+                for c = 1, n do
+                    local v = x % 2
+                    x = (x - v) / 2
+                    row[c] = v
+                    ones[c] = ones[c] + v
+                end
+                if rec(r + 1) then return true end
+                for c = 1, n do ones[c] = ones[c] - row[c]; row[c] = nil end
+                used[p] = nil
+                if nodes > FILL_NODE_CAP then return false end
+            end
+        end
+        return false
+    end
+
+    return rec(1)
 end
 
 -- Counts solutions (up to `limit`) of the Binairo instance given the
@@ -191,7 +218,7 @@ local function countSolutions(cells, given, n, limit, node_budget)
     end
 
     -- Rows/columns must also all be pairwise distinct (a real Binairo rule
-    -- -- see the module doc comment -- not enforced by `_fill`'s solution
+    -- -- see the module doc comment -- not enforced by the old `_fill`'s solution
     -- construction, but still a constraint on which grids count as valid
     -- completions here: checkErrors/_isComplete compare a player's answer
     -- directly against the stored solution, so any OTHER grid satisfying
@@ -247,7 +274,149 @@ local function countSolutions(cells, given, n, limit, node_budget)
     return solutions, exhausted
 end
 
-function BinairoBoard:generate(n, difficulty)
+-- Removing a clue from a uniquely solvable grid keeps it unique exactly
+-- when no completion puts the OTHER value in that cell (any second
+-- solution must differ from the stored one there, since the grid with that
+-- cell given was unique). So instead of counting solutions up to 2 --
+-- rebuilding the stored solution first, then looking for another -- this
+-- forces the opposite value and only has to refute it, with incremental
+-- row/column counts and forced-cell propagation. Several times faster on
+-- 12x12 Hard. Returns (found, exhausted). countSolutions is kept for the
+-- specs, which cross-check the two.
+--
+-- Unlike countSolutions, an alternative completion counts even if two of
+-- its rows or columns are identical: the in-game rules only state balance
+-- and no-three-in-a-row, so a puzzle must be unique without the
+-- distinct-lines rule. (countSolutions applied that rule only partially --
+-- a full row was compared with the rows above it, never with full rows
+-- below -- so this is at least as strict.)
+local function hasOtherSolution(cells, given, n, r0, c0, node_budget, solution)
+    local half = n / 2
+    local grid, rc, cc = {}, {}, {}
+    for r = 1, n do
+        grid[r] = {}
+        rc[r] = { [0] = 0, [1] = 0 }
+        cc[r] = { [0] = 0, [1] = 0 }
+    end
+    local empties = {}
+    for r = 1, n do
+        for c = 1, n do
+            local v = given[r][c] and cells[r][c] or -1
+            grid[r][c] = v
+            if v == -1 then
+                empties[#empties + 1] = r * 64 + c
+            else
+                rc[r][v] = rc[r][v] + 1
+                cc[c][v] = cc[c][v] + 1
+            end
+        end
+    end
+    local ne = #empties
+    local nodes, exhausted = 0, false
+
+    local function canPlace(r, c, v)
+        if rc[r][v] >= half or cc[c][v] >= half then return false end
+        local g = grid[r]
+        local l1, l2, r1, r2 = g[c - 1], g[c - 2], g[c + 1], g[c + 2]
+        if l1 == v and (l2 == v or r1 == v) then return false end
+        if r1 == v and r2 == v then return false end
+        local u1 = r > 1 and grid[r - 1][c]
+        local d1 = r < n and grid[r + 1][c]
+        if u1 == v and ((r > 2 and grid[r - 2][c] == v) or d1 == v) then return false end
+        if d1 == v and r < n - 1 and grid[r + 2][c] == v then return false end
+        return true
+    end
+
+    -- Assignments are recorded on a trail so a branch can be undone in one
+    -- go. Placing (r, c) can only change the candidates of cells in row r
+    -- and column c, so propagation re-examines just those.
+    local trail, tn = {}, 0
+    local function set(r, c, v)
+        grid[r][c] = v
+        rc[r][v] = rc[r][v] + 1
+        cc[c][v] = cc[c][v] + 1
+        tn = tn + 1
+        trail[tn] = r * 64 + c
+    end
+    local function undoTo(mark)
+        while tn > mark do
+            local e = trail[tn]
+            local r, c = (e - e % 64) / 64, e % 64
+            local v = grid[r][c]
+            grid[r][c] = -1
+            rc[r][v] = rc[r][v] - 1
+            cc[c][v] = cc[c][v] - 1
+            tn = tn - 1
+        end
+    end
+
+    -- Returns false on a contradiction (a cell left with no candidate).
+    local function check(r, c)
+        if grid[r][c] ~= -1 then return true end
+        local p0, p1 = canPlace(r, c, 0), canPlace(r, c, 1)
+        if p0 and p1 then return true end
+        if not (p0 or p1) then return false end
+        set(r, c, p0 and 0 or 1)
+        return true
+    end
+    local function propagate(from)
+        local i = from
+        while i <= tn do
+            local e = trail[i]
+            local r, c = (e - e % 64) / 64, e % 64
+            for j = 1, n do
+                if not check(r, j) then return false end
+                if not check(j, c) then return false end
+            end
+            i = i + 1
+        end
+        return true
+    end
+
+    local function search()
+        nodes = nodes + 1
+        if nodes > node_budget then exhausted = true; return false end
+        -- Branch on the open cell whose row and column are fullest.
+        local cell, best = nil, -1
+        for i = 1, ne do
+            local e = empties[i]
+            local er, ec = (e - e % 64) / 64, e % 64
+            if grid[er][ec] == -1 then
+                local f = rc[er][0] + rc[er][1] + cc[ec][0] + cc[ec][1]
+                if f > best then cell, best = e, f end
+            end
+        end
+        if not cell then return true end
+        local r, c = (cell - cell % 64) / 64, cell % 64
+        local mark = tn
+        -- A second solution, when there is one, mostly agrees with the
+        -- stored one: trying the stored value first finds it sooner.
+        local v1 = solution and solution[r][c] or 0
+        for k = 0, 1 do
+            local v = k == 0 and v1 or 1 - v1
+            if canPlace(r, c, v) then
+                set(r, c, v)
+                local ok = propagate(mark + 1) and search()
+                undoTo(mark)
+                if ok or exhausted then return ok end
+            end
+        end
+        return false
+    end
+
+    -- Force the opposite value into the cell being removed.
+    local v0 = 1 - cells[r0][c0]
+    if not canPlace(r0, c0, v0) then return false, false end
+    set(r0, c0, v0)
+    if not propagate(1) then return false, false end
+    local found = search()
+    return found, exhausted
+end
+BinairoBoard._hasOtherSolution = hasOtherSolution
+BinairoBoard._countSolutions = countSolutions
+
+-- on_progress (optional) is called with a 0..1 fraction while digging.
+function BinairoBoard:generate(n, difficulty, on_progress)
     self.n          = n or self.n
     self.difficulty = difficulty or self.difficulty
     self.solved     = false
@@ -257,9 +426,11 @@ function BinairoBoard:generate(n, difficulty)
     self.timer:start()
 
     -- Build a complete valid board.
-    local grid = {}
-    for i = 1, self.n do grid[i] = {} end
-    self:_fill(grid, 1)
+    local grid
+    repeat
+        grid = {}
+        for i = 1, self.n do grid[i] = {} end
+    until self:_fillRows(grid)
     self.solution = copy2d(grid, self.n)
 
     -- Dig cells one at a time (like sudoku-common's hole-digging), starting
@@ -291,10 +462,11 @@ function BinairoBoard:generate(n, difficulty)
     local hidden = 0
     for _, pos in ipairs(positions) do
         if hidden >= target_hide then break end
+        if on_progress then on_progress(hidden / target_hide) end
         local r, c = pos[1], pos[2]
         self.given[r][c] = false
-        local solutions, exhausted = countSolutions(self.cells, self.given, self.n, 2, NODE_BUDGET_UNIQUENESS)
-        if not exhausted and solutions == 1 then
+        local other, exhausted = hasOtherSolution(self.cells, self.given, self.n, r, c, NODE_BUDGET_UNIQUENESS, self.solution)
+        if not exhausted and not other then
             self.cells[r][c] = nil
             hidden = hidden + 1
         else
