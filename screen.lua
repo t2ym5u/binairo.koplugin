@@ -18,6 +18,7 @@ local _               = require("i18n")
 
 local ScreenBase      = require("screen_base")
 local MenuHelper      = require("menu_helper")
+local GenProgress     = require("gen_progress")
 
 local BinairoBoard       = lrequire("board")
 local BinairoBoardWidget = lrequire("board_widget")
@@ -59,12 +60,17 @@ function BinairoScreen:init()
     local state = self.plugin:loadState()
     self.board = BinairoBoard:new()
     if not self.board:load(state) then
-        self.board:generate(
-            tonumber(self.plugin:getSetting("grid_size", "8")),
-            self.plugin:getSetting("difficulty", "easy")
-        )
+        self:_generate()
     end
     ScreenBase.init(self)
+end
+
+-- 12x12 Hard can take a moment on a slow e-reader: the progress bar only
+-- shows if it does.
+function BinairoScreen:_generate()
+    local n    = tonumber(self.plugin:getSetting("grid_size", "8"))
+    local diff = self.plugin:getSetting("difficulty", "easy")
+    GenProgress.run(function(on_progress) self.board:generate(n, diff, on_progress) end)
 end
 
 function BinairoScreen:serializeState()
@@ -167,10 +173,7 @@ end
 
 function BinairoScreen:onNewGame()
     math.randomseed(os.time())
-    self.board:generate(
-        tonumber(self.plugin:getSetting("grid_size", "8")),
-        self.plugin:getSetting("difficulty", "easy")
-    )
+    self:_generate()
     self.plugin:saveState(self.board:serialize())
     self:_rebuildBoardWidget()
     self:updateStatus(_("New game started."))
