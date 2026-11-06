@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-11-05
+
+### Changed
+- Difficulty levels now really differ, and no puzzle needs guessing.
+  Before, levels only showed fewer cells, and digging only checked that
+  the answer stayed unique: some puzzles (12×12 Hard: 30%, 12×12 Medium:
+  10%) could only be finished by trial and error, while many Medium and
+  Hard ones needed nothing beyond the basic rules. Each puzzle is now
+  graded by a human-style solver:
+  - Easy: the basic rules only (close a pair, fill a gap, complete a
+    line that already has all its 0s or 1s). About half the cells shown.
+  - Medium: also needs a few whole-line deductions ("every way to finish
+    this row puts a 1 here"). About a third of the cells shown.
+  - Hard: fewer cells shown (about a fifth to a quarter) and many more
+    whole-line deductions.
+- Grids differ from 1.4.x for the same seed (today's Daily Challenge grid
+  changes once after updating). Saved games still load.
+
 ## [1.4.2] - 2026-11-04
 
 ### Fixed

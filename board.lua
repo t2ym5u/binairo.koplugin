@@ -22,7 +22,6 @@ local bit        = require("bit")
 local BinairoBoard = {}
 BinairoBoard.__index = BinairoBoard
 
-local REVEAL = { easy = 0.55, medium = 0.45, hard = 0.35 }
 
 function BinairoBoard:new(opts)
     opts = opts or {}
@@ -169,7 +168,9 @@ end
 -- (solutions_found, exhausted); exhausted=true means node_budget was hit
 -- before the search concluded, so the count isn't proof. Mirrors
 -- sudokukiller.koplugin/board.lua's countCageSolutions.
-local NODE_BUDGET_UNIQUENESS = 200000
+-- Since 1.5.0 the generator digs with logicSolve (below), which proves
+-- uniqueness by itself; this counter and hasOtherSolution stay as
+-- independent checks for the specs.
 
 local function countSolutions(cells, given, n, limit, node_budget)
     local grid = {}
@@ -415,6 +416,235 @@ end
 BinairoBoard._hasOtherSolution = hasOtherSolution
 BinairoBoard._countSolutions = countSolutions
 
+-- ---------------------------------------------------------------------------
+-- Human-style solver (1.5.0), used to grade and dig puzzles
+-- ---------------------------------------------------------------------------
+--
+-- Works one line (row or column) at a time, never by trial and error:
+--   tier 1  the basic rules a beginner applies at a glance:
+--           - a pair "x x" is closed by the other value on both sides;
+--           - a gap "x _ x" is filled with the other value;
+--           - a line that already holds n/2 of a value gets the other
+--             value in every empty cell.
+--   tier 2  whole-line reasoning: of all the ways to finish this one line
+--           (balanced, no three in a row), every one puts the same value
+--           in some empty cell, so that cell is settled. This is how a
+--           player sees "the last two 0s cannot both go there".
+-- Tier 2 is only used when tier 1 is stuck, and every tier-2 step is
+-- counted: that count is what tells the levels apart.
+--
+-- logicSolve(grid, n, max_tier) works on a COPY of grid (rows of nil/0/1)
+-- and returns solved, t2_steps, and the cells it filled (flat array,
+-- (r-1)*n+c, -1 where still empty). A puzzle it solves has exactly one
+-- solution, since every deduction only follows from the rules.
+local function logicSolve(grid, n, max_tier)
+    local half = n / 2
+    local patterns = rowPatterns(n)
+    local np = #patterns
+    -- Flat cell array (-1 = empty) and the cell indices of every line.
+    local v = {}
+    for r = 1, n do
+        for c = 1, n do
+            local x = grid[r][c]
+            v[(r - 1) * n + c] = x == nil and -1 or x
+        end
+    end
+    local lines = {}
+    for k = 1, n do
+        local row, col = {}, {}
+        for i = 1, n do
+            row[i] = (k - 1) * n + i
+            col[i] = (i - 1) * n + k
+        end
+        lines[#lines + 1] = row
+        lines[#lines + 1] = col
+    end
+    local open = 0
+    for i = 1, n * n do if v[i] == -1 then open = open + 1 end end
+    local seen = {}   -- cells already accounted for in `dirty`
+
+    -- Tier 1 on one line; returns true if it placed anything.
+    local function tier1(L)
+        local placed = false
+        local cnt0, cnt1 = 0, 0
+        for i = 1, n do
+            local x = v[L[i]]
+            if x == 0 then cnt0 = cnt0 + 1 elseif x == 1 then cnt1 = cnt1 + 1 end
+        end
+        if cnt0 + cnt1 == n then return false end
+        for i = 1, n do
+            if v[L[i]] == -1 then
+                local a1 = i > 1 and v[L[i - 1]] or -2
+                local a2 = i > 2 and v[L[i - 2]] or -2
+                local b1 = i < n and v[L[i + 1]] or -2
+                local b2 = i < n - 1 and v[L[i + 2]] or -2
+                local put
+                for x = 0, 1 do
+                    if (a1 == x and a2 == x) or (b1 == x and b2 == x) or (a1 == x and b1 == x) then
+                        put = 1 - x
+                    end
+                end
+                if not put then
+                    if cnt0 >= half then put = 1 elseif cnt1 >= half then put = 0 end
+                end
+                if put then
+                    v[L[i]] = put
+                    if put == 0 then cnt0 = cnt0 + 1 else cnt1 = cnt1 + 1 end
+                    open = open - 1
+                    placed = true
+                end
+            end
+        end
+        return placed
+    end
+
+    -- Tier 2 on one line: intersect every completion of the line.
+    local function tier2(L)
+        local mask, val, bitc, empty = 0, 0, 1, false
+        for i = 1, n do
+            local x = v[L[i]]
+            if x == -1 then empty = true
+            else
+                mask = mask + bitc
+                if x == 1 then val = val + bitc end
+            end
+            bitc = bitc * 2
+        end
+        if not empty then return false end
+        local all_and, all_or, any = -1, 0, false
+        for k = 1, np do
+            local p = patterns[k]
+            if bit.band(p, mask) == val then
+                all_and = bit.band(all_and, p)
+                all_or = bit.bor(all_or, p)
+                any = true
+            end
+        end
+        if not any then return false end
+        local placed = false
+        bitc = 1
+        for i = 1, n do
+            if v[L[i]] == -1 then
+                if bit.band(all_and, bitc) ~= 0 then
+                    v[L[i]] = 1; open = open - 1; placed = true
+                elseif bit.band(all_or, bitc) == 0 then
+                    v[L[i]] = 0; open = open - 1; placed = true
+                end
+            end
+            bitc = bitc * 2
+        end
+        return placed
+    end
+
+    -- Only lines that changed since they were last looked at can give a
+    -- new tier-1 deduction; a placed cell dirties its row and column.
+    local nl = #lines
+    local dirty = {}
+    for k = 1, nl do dirty[k] = true end
+    local function markLine(L)
+        for i = 1, n do
+            local idx = L[i]
+            if v[idx] ~= -1 and not seen[idx] then
+                seen[idx] = true
+                local r = (idx - 1 - (idx - 1) % n) / n + 1
+                local c = (idx - 1) % n + 1
+                dirty[2 * r - 1] = true
+                dirty[2 * c] = true
+            end
+        end
+    end
+    for i = 1, n * n do if v[i] ~= -1 then seen[i] = true end end
+    local t2 = 0
+    while open > 0 do
+        local progress = false
+        local again = true
+        while again do
+            again = false
+            for k = 1, nl do
+                if dirty[k] then
+                    dirty[k] = false
+                    if tier1(lines[k]) then
+                        progress, again = true, true
+                        markLine(lines[k])
+                    end
+                end
+            end
+        end
+        if open == 0 then break end
+        if max_tier < 2 then break end
+        local found = false
+        for k = 1, nl do
+            if tier2(lines[k]) then
+                t2 = t2 + 1
+                markLine(lines[k])
+                found = true
+                break   -- back to the easy rules after each hard step
+            end
+        end
+        if not found then break end
+    end
+    return open == 0, t2, v
+end
+BinairoBoard._logicSolve = logicSolve
+
+-- What each level asks for (1.5.0). Before, the levels differed only by
+-- how many cells were shown, and digging only checked that the answer
+-- stayed unique: some puzzles (12x12 Hard: 30%) could only be finished by
+-- trial and error, and many Medium/Hard ones needed nothing beyond the
+-- basic rules.
+--   tier          the hardest reasoning the puzzle may need (see logicSolve)
+--   min_given     never show fewer cells than this fraction of the grid
+--   min_t2/max_t2 how many tier-2 steps the solution needs
+-- Easy: basic rules only. Medium: a few whole-line steps. Hard: fewer
+-- cells shown and more whole-line steps. Never trial and error.
+local LEVELS = {
+    easy   = function(n) return { tier = 1, min_given = 0.50, min_t2 = 0, max_t2 = 0 } end,
+    medium = function(n) return { tier = 2, min_given = n <= 6 and 0.30 or 0.36,
+                                  min_t2 = n >= 10 and 2 or 1, max_t2 = n } end,
+    hard   = function(n) return { tier = 2, min_given = 0.20,
+                                  min_t2 = n <= 6 and 2 or math.floor(n / 2), max_t2 = math.huge } end,
+}
+BinairoBoard.LEVELS = LEVELS
+-- Candidates tried per puzzle, by size: small grids are cheap to dig but
+-- miss the tier-2 window more often.
+BinairoBoard.ATTEMPTS = { [6] = 24, [8] = 12, [10] = 6, [12] = 4 }
+
+-- Digs one candidate puzzle from a full solution: cells are hidden in a
+-- random order, each one only if the solver, limited to the level's tier,
+-- still finishes the grid without it, and never below the level's floor of
+-- shown cells. Returns the given mask, the number of givens and the
+-- tier-2 step count of the result.
+local function dig(solution, n, level, on_progress, base, span)
+    local given = {}
+    local grid = {}
+    for r = 1, n do
+        given[r], grid[r] = {}, {}
+        for c = 1, n do given[r][c] = true; grid[r][c] = solution[r][c] end
+    end
+    local positions = {}
+    for r = 1, n do
+        for c = 1, n do positions[#positions + 1] = { r, c } end
+    end
+    shuffle(positions)
+    local total = n * n
+    local floor_given = math.ceil(total * level.min_given)
+    local shown = total
+    for i, pos in ipairs(positions) do
+        if shown <= floor_given then break end
+        if on_progress then on_progress(base + span * i / total) end
+        local r, c = pos[1], pos[2]
+        grid[r][c] = nil
+        if logicSolve(grid, n, level.tier) then
+            given[r][c] = false
+            shown = shown - 1
+        else
+            grid[r][c] = solution[r][c]
+        end
+    end
+    local _, t2 = logicSolve(grid, n, 2)
+    return given, shown, t2
+end
+
 -- on_progress (optional) is called with a 0..1 fraction while digging.
 function BinairoBoard:generate(n, difficulty, on_progress)
     self.n          = n or self.n
@@ -424,55 +654,45 @@ function BinairoBoard:generate(n, difficulty, on_progress)
     self.undo:clear()
     self.timer:reset()
     self.timer:start()
+    n = self.n
+    local level = (LEVELS[self.difficulty] or LEVELS.medium)(n)
 
-    -- Build a complete valid board.
-    local grid
-    repeat
-        grid = {}
-        for i = 1, self.n do grid[i] = {} end
-    until self:_fillRows(grid)
-    self.solution = copy2d(grid, self.n)
-
-    -- Dig cells one at a time (like sudoku-common's hole-digging), starting
-    -- fully revealed and verifying with countSolutions after each tentative
-    -- removal, putting the cell back if that broke uniqueness -- the old
-    -- "mask a flat ratio of cells" approach never checked this (see
-    -- docs/generator_robustness_audit.md's Tier 2 table: measured 0%
-    -- unique at every size/difficulty tested).
-    local ratio = REVEAL[self.difficulty] or 0.5
-    local positions = {}
-    for i = 1, self.n do
-        for j = 1, self.n do positions[#positions + 1] = { i, j } end
+    -- Up to ATTEMPTS candidates (fresh solution each time) until one needs
+    -- a number of tier-2 steps in the level's range; otherwise the one
+    -- closest to that range. Every candidate is solved by logicSolve
+    -- without trial, so any of them is a valid, unique puzzle. Bounded by
+    -- attempt counts only: same seed, same puzzle on every device.
+    local attempts = BinairoBoard.ATTEMPTS[n] or 6
+    local best, best_miss
+    for attempt = 1, attempts do
+        local grid
+        repeat
+            grid = {}
+            for i = 1, n do grid[i] = {} end
+        until self:_fillRows(grid)
+        local given, _, t2 = dig(grid, n, level, on_progress,
+            (attempt - 1) / attempts, 1 / attempts)
+        local miss = 0
+        if t2 < level.min_t2 then miss = level.min_t2 - t2
+        elseif t2 > level.max_t2 then miss = t2 - level.max_t2 end
+        if not best or miss < best_miss then
+            best, best_miss = { solution = grid, given = given, t2 = t2, attempts = attempt }, miss
+        end
+        if miss == 0 then break end
     end
-    shuffle(positions)
-    local total        = self.n * self.n
-    local target_hide  = total - math.floor(total * ratio)
 
+    self.solution = best.solution
+    self.given = best.given
+    -- How the kept puzzle graded (not saved; read by the specs).
+    self.grade = { t2 = best.t2, attempt = best.attempts }
     self.cells = {}
-    self.given = {}
-    for i = 1, self.n do
-        self.cells[i] = {}
-        self.given[i] = {}
-        for j = 1, self.n do
-            self.cells[i][j] = self.solution[i][j]
-            self.given[i][j] = true
+    for r = 1, n do
+        self.cells[r] = {}
+        for c = 1, n do
+            if self.given[r][c] then self.cells[r][c] = self.solution[r][c] end
         end
     end
-
-    local hidden = 0
-    for _, pos in ipairs(positions) do
-        if hidden >= target_hide then break end
-        if on_progress then on_progress(hidden / target_hide) end
-        local r, c = pos[1], pos[2]
-        self.given[r][c] = false
-        local other, exhausted = hasOtherSolution(self.cells, self.given, self.n, r, c, NODE_BUDGET_UNIQUENESS, self.solution)
-        if not exhausted and not other then
-            self.cells[r][c] = nil
-            hidden = hidden + 1
-        else
-            self.given[r][c] = true
-        end
-    end
+    if on_progress then on_progress(1) end
 end
 
 -- ---------------------------------------------------------------------------

@@ -8,12 +8,12 @@ A Binairo (Takuzu) puzzle plugin for [KOReader](https://github.com/koreader/kore
 
 ## Rules
 
-Fill the grid with 0s and 1s so that every row and column has an equal number of each, no three consecutive cells share the same value, and no two rows (or two columns) are identical.
+Fill the grid with 0s and 1s so that every row and column has an equal number of each and no three consecutive cells share the same value. Solutions never repeat a row or a column, but no puzzle relies on that classic extra rule.
 
 ## Features
 
 - **Multiple grid sizes**
-- **Three difficulty levels** — Easy, Medium, Hard
+- **Three difficulty levels** — Easy needs only the basic rules; Medium adds whole-line reasoning; Hard shows fewer cells and needs much more of it. Every puzzle has a single solution and can be solved by logic alone, without guessing
 - **Timer** — elapsed time shown, best time recorded on solve
 - **Error check** — highlights rule violations without revealing the solution
 - **Reveal solution**
