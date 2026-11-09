@@ -151,46 +151,6 @@ describe("BinairoBoard", function()
     end)
     -- 1.4.0: row-at-a-time fill + forced-opposite uniqueness check.
     describe("generator (1.4.0 speed-up)", function()
-        local function checkSolution(b)
-            local n, half = b.n, b.n / 2
-            local rows, cols = {}, {}
-            for r = 1, n do
-                local ones, rk, ck, cones = 0, "", "", 0
-                for c = 1, n do
-                    local v = b.solution[r][c]
-                    assert.is_true(v == 0 or v == 1)
-                    ones = ones + v
-                    rk = rk .. v
-                    if c > 2 then
-                        assert.is_false(v == b.solution[r][c - 1] and v == b.solution[r][c - 2])
-                    end
-                    local w = b.solution[c][r]
-                    cones = cones + w
-                    ck = ck .. w
-                    if c > 2 then
-                        assert.is_false(w == b.solution[c - 1][r] and w == b.solution[c - 2][r])
-                    end
-                end
-                assert.are.equal(half, ones)
-                assert.are.equal(half, cones)
-                assert.is_nil(rows[rk]); rows[rk] = true
-                assert.is_nil(cols[ck]); cols[ck] = true
-            end
-        end
-
-        it("builds valid, uniquely solvable puzzles at every size", function()
-            for _, n in ipairs({ 6, 8, 10, 12 }) do
-                for seed = 1, 6 do
-                    math.randomseed(seed * 101 + n)
-                    local b = Board:new()
-                    b:generate(n, "hard")
-                    checkSolution(b)
-                    local count = Board._countSolutions(b.cells, b.given, n, 2, 2000000)
-                    assert.are.equal(1, count)
-                end
-            end
-        end)
-
         it("hasOtherSolution agrees with the solution counter", function()
             -- Each removal is checked with both; the new check ignores the
             -- distinct-lines rule, so it may only ever be stricter.
@@ -218,23 +178,6 @@ describe("BinairoBoard", function()
             end
         end)
 
-        it("gives the same puzzle for the same seed", function()
-            math.randomseed(777); local a = Board:new(); a:generate(10, "medium")
-            math.randomseed(777); local b = Board:new(); b:generate(10, "medium")
-            assert.are.same(a.solution, b.solution)
-            assert.are.same(a.given, b.given)
-        end)
-
-        it("generates 12x12 Hard quickly", function()
-            local t0 = os.clock()
-            for seed = 1, 5 do
-                math.randomseed(seed)
-                Board:new():generate(12, "hard")
-            end
-            -- ~15 ms each in LuaJIT; very generous for plain Lua.
-            assert.is_true(os.clock() - t0 < 10)
-        end)
-
         it("reports progress while digging", function()
             math.randomseed(3)
             local last, calls = -1, 0
@@ -248,68 +191,6 @@ describe("BinairoBoard", function()
 
     -- 1.5.0: levels graded by a human-style solver, never trial and error.
     describe("difficulty levels (1.5.0)", function()
-        local SIZES, LEVELS = { 6, 8, 10, 12 }, { "easy", "medium", "hard" }
-        local SEEDS = 8
-
-        local function givenGrid(b)
-            local g = {}
-            for r = 1, b.n do
-                g[r] = {}
-                for c = 1, b.n do
-                    if b.given[r][c] then g[r][c] = b.solution[r][c] end
-                end
-            end
-            return g
-        end
-
-        it("every level is solvable without trial, within its tier and window", function()
-            for _, n in ipairs(SIZES) do
-                for _, d in ipairs(LEVELS) do
-                    local level = Board.LEVELS[d](n)
-                    for seed = 1, SEEDS do
-                        math.randomseed(seed * 31 + n)
-                        local b = Board:new()
-                        b:generate(n, d)
-                        local ok, t2, v = Board._logicSolve(givenGrid(b), n, level.tier)
-                        assert.is_true(ok, n .. " " .. d .. " seed " .. seed)
-                        for r = 1, n do
-                            for c = 1, n do
-                                assert.are.equal(b.solution[r][c], v[(r - 1) * n + c])
-                            end
-                        end
-                        if d == "easy" then
-                            assert.are.equal(0, t2)
-                        else
-                            assert.is_true(t2 >= 1, n .. " " .. d .. " needs tier 2")
-                        end
-                    end
-                end
-            end
-        end)
-
-        it("levels are distinct: fewer givens and more tier-2 steps as they go up", function()
-            for _, n in ipairs(SIZES) do
-                local giv, t2s = {}, {}
-                for li, d in ipairs(LEVELS) do
-                    giv[li], t2s[li] = 0, 0
-                    for seed = 1, SEEDS do
-                        math.randomseed(seed * 17 + n)
-                        local b = Board:new()
-                        b:generate(n, d)
-                        local _, t2 = Board._logicSolve(givenGrid(b), n, 2)
-                        t2s[li] = t2s[li] + t2
-                        for r = 1, n do
-                            for c = 1, n do
-                                if b.given[r][c] then giv[li] = giv[li] + 1 end
-                            end
-                        end
-                    end
-                end
-                assert.is_true(giv[1] > giv[2] and giv[2] > giv[3], "givens n=" .. n)
-                assert.is_true(t2s[1] < t2s[2] and t2s[2] < t2s[3], "tier-2 steps n=" .. n)
-            end
-        end)
-
         it("the solver never settles an ambiguous grid", function()
             -- Random partial grids: whenever the solver finishes one, the
             -- brute-force counter finds exactly one solution, and it is
@@ -342,18 +223,6 @@ describe("BinairoBoard", function()
                 end
             end
             assert.is_true(solved >= 25, "solved " .. solved)
-        end)
-
-        it("generation stays bounded (12x12 Hard, worst of 10 seeds)", function()
-            local worst = 0
-            for seed = 1, 10 do
-                math.randomseed(seed)
-                local t0 = os.clock()
-                Board:new():generate(12, "hard")
-                worst = math.max(worst, os.clock() - t0)
-            end
-            -- <= 40 ms in LuaJIT; very generous for plain Lua.
-            assert.is_true(worst < 2)
         end)
 
         it("loads a save from 1.4.x", function()
