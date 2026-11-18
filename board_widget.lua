@@ -1,8 +1,6 @@
 local Blitbuffer = require("ffi/blitbuffer")
-local Geom       = require("ui/geometry")
 local RenderText = require("ui/rendertext")
 local Size       = require("ui/size")
-local UIManager  = require("ui/uimanager")
 local common     = require("grid_widget_base")
 
 local GridWidgetBase = common.GridWidgetBase
@@ -99,16 +97,6 @@ function BinairoBoardWidget:paintTo(bb, x, y)
     drawLine(bb, x,              y + rect.h - bw, rect.w, bw, Blitbuffer.COLOR_BLACK)
     drawLine(bb, x,              y,              bw, rect.h, Blitbuffer.COLOR_BLACK)
     drawLine(bb, x + rect.w - bw, y,              bw, rect.h, Blitbuffer.COLOR_BLACK)
-end
-
--- GridWidgetBase:refresh marks the board itself dirty, but UIManager only
--- repaints top-level widgets: the old pixels come back. Callers pass the
--- screen as `parent`, which repaints it and refreshes only the board.
-function BinairoBoardWidget:refresh(parent)
-    if not parent then return GridWidgetBase.refresh(self) end
-    local r = self.paint_rect
-    local geom = Geom:new{ x = r.x, y = r.y, w = r.w, h = r.h }
-    UIManager:setDirty(parent, function() return "ui", geom end)
 end
 
 return BinairoBoardWidget
