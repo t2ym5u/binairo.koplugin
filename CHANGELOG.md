@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.2] - 2026-11-18
+
+### Fixed
+- Undo during play shows the board as it was at once.
+
 ## [1.5.1] - 2026-11-12
 
 ### Changed

@@ -155,7 +155,7 @@ function BinairoScreen:onCellSelected(r, c)
         self:updateStatus(msg)
     else
         self:_updateUndoBtn()
-        self.board_widget:refresh()
+        self.board_widget:refresh(self)
         self.plugin:saveState(self.board:serialize())
         if self.board.solved then
             self:updateStatus(T(_("Solved! Time: %1"), self.board.timer:format()))
@@ -187,7 +187,7 @@ function BinairoScreen:_rebuildBoardWidget()
         self.board_widget.rows  = self.board.n
         self.board_widget:init()
     end
-    self.board_widget:refresh()
+    self.board_widget:refresh(self)
     self:_updateUndoBtn()
 end
 
@@ -195,7 +195,7 @@ function BinairoScreen:onUndo()
     local ok, msg = self.board:undoLast()
     if msg then self:updateStatus(msg) end
     if ok then
-        self.board_widget:refresh()
+        self.board_widget:refresh(self)
         self.plugin:saveState(self.board:serialize())
     end
     self:_updateUndoBtn()
@@ -208,7 +208,7 @@ function BinairoScreen:onCheck()
     for _, row in pairs(errs) do
         for _ in pairs(row) do count = count + 1 end
     end
-    self.board_widget:refresh()
+    self.board_widget:refresh(self)
     if count == 0 then
         self:updateStatus(_("No errors found!"))
     else
@@ -218,7 +218,7 @@ end
 
 function BinairoScreen:onReveal()
     self.board:revealSolution()
-    self.board_widget:refresh()
+    self.board_widget:refresh(self)
     self.plugin:saveState(self.board:serialize())
     self:updateStatus(_("Solution revealed."))
     self:refreshActionBar()
